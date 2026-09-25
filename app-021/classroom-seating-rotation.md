@@ -18,7 +18,7 @@
 
 ## 4. 核心功能（MVP）
 1. **班级与座位图**：行数、列数（各 2~12）、过道位置（第 i|i+1 列之间，可多条）、门的方向（左/右，窗在另一侧）、布局模式（行列排座 / 小组围坐）；座位自动标注 `front` / `middle` / `back`（按 1/3 行）、`window`、`door`、`aisle`，小组模式额外带 `group:G{n}`。
-2. **学生名单**：姓名、身高、视力（`none` / `front_required` / `middle_required`）、特殊需求（`hearing` / `mobility`）、学习分层 T1~T3、必须分开的对象列表、固定座位、备注；支持逐条弹窗编辑与「批量粘贴」（每行 `姓名,身高,备注`，逗号 / 中文逗号 / 制表符分隔，重名跳过）。
+2. **学生名单**：姓名、身高、视力（`none` / `front_required` / `middle_required`）、特殊需求（`hearing` / `mobility`）、学习分层 T1~T3、必须分开的对象列表、固定座位、备注；支持逐条弹窗编辑与「批量粘贴」。批量粘贴每行 `姓名,身高,备注`（逗号 / 中文逗号 / 制表符分列，多余列并入备注，教务表可直接整列粘贴）：备注中的「近视需前排 / 需中间 / 听力 / 行动不便」自动识别为结构化约束，引擎无法自动排座的要求（如「不坐后排」）保留在备注并标注「仅备注」；姓名按去空白（含全角空格）规范化后查重（对现有名单与粘贴文本内部）；粘贴后先逐行预览「导入 / 仅备注 / 跳过及原因」，确认后才入名单，导入后提示跳过明细（`src/lib/roster.ts`、`Setup.tsx` 的 `BulkModal`）。
 3. **配置校验**：生成前跑 `validateClass()`，把「学生多于座位」「固定座位冲突」「前排 / 中间列 / 靠过道容量不足」「固定座位与学生自身需求冲突」等以人话列在 Setup 页顶部。
 4. **轮换生成**：填入周数（1~52，默认 20）与种子，一次生成第 1..N 周；同参数 + 同种子结果完全一致（可复现）。
 5. **手工微调**：在某一周拖拽两个座位交换，拖拽途中实时显示「位置分偏差² 前后值 / 重复同桌对前后值 / 是否违反硬约束」；违反硬约束的交换被拒绝并给出原因；合法交换可一键撤销。
@@ -86,7 +86,7 @@ class InfeasibleError extends Error {}
 - **同桌重复**：同配置 20 周，同桌超 2 次的对必须为 0（`tests/acceptance.test.ts:39-47`）。
 - **边界容量**：30 人坐 40 座（含空位）生成 8 周，每周映射恰好 30 条且硬约束违反为 0（`tests/acceptance.test.ts:49-59`）。
 - **可复现与性能**：同种子结果完全一致、不同种子第 1 周不同（`tests/engine.test.ts:12-26`）；40 人 × 20 周生成耗时 < 1000ms（`tests/engine.test.ts:153-163`）。
-- **测试规模**：vitest 30 个用例（acceptance 4 / engine 15 / layout 5 / rng 3 / csv 2 / storage 1），Playwright 13 个用例（journey 6 / sample 7）；E2E 针对 `vite preview`（4173）运行（`vitest.config.ts`、`playwright.config.ts`）。
+- **测试规模**：vitest 49 个用例（acceptance 4 / engine 15 / layout 5 / rng 3 / csv 2 / storage 1 / roster 19），Playwright 14 个用例（journey 7 / sample 7）；E2E 针对 `vite preview`（4173）运行（`vitest.config.ts`、`playwright.config.ts`）。
 - **E2E 关键断言**：示例班级 40 人、5×8；生成 20 周后硬约束显示 0；固定座位学生被拖走时预览提示「违反硬约束」且座位不变；合法交换后硬约束仍为 0 且可撤销；刷新后 20 周结果与座位图完全一致（IndexedDB 持久化）；重复导入示例班级生成「副本」而非覆盖（`e2e/sample.spec.ts`）。
 
 ## 11. 边界（刻意不做）

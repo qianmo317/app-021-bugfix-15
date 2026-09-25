@@ -1,15 +1,16 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from '../router'
 import { useStore } from '../store'
 import type { ClassEntity, LayoutConfig, Student } from '../types'
 import { buildSeats, specialLabel, visionLabel } from '../lib/layout'
 import { validateClass } from '../lib/validate'
+import { normalizeName, parseRoster, type RosterResult } from '../lib/roster'
 import { uid } from '../lib/id'
 import { SeatGrid } from '../components/SeatGrid'
 import {
   AlertTriangle,
   ArrowLeft,
-  Eraser,
+  Check,
   Rows3,
   Settings2,
   Table2,
@@ -23,6 +24,13 @@ export function Setup({ classId }: { classId: string }) {
   const cls = getClass(classId)
   const [editing, setEditing] = useState<Student | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
+  const [toast, setToast] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!toast) return
+    const t = setTimeout(() => setToast(null), 8000)
+    return () => clearTimeout(t)
+  }, [toast])
 
   if (!cls) {
     return (
@@ -36,12 +44,13 @@ export function Setup({ classId }: { classId: string }) {
   const errors = validateClass(cls)
   const hasPlan = cls.assignments.length > 0
 
-  const save = (next: ClassEntity, configChanged = false) => {
+  const save = (next: ClassEntity, configChanged = false): boolean => {
     if (configChanged && hasPlan) {
       const ok = window.confirm('配置已变更，将清空已生成的轮换结果。继续？')
-      if (!ok) return
+      if (!ok) return false
     }
     updateSetup(next, configChanged)
+    return true
   }
 
   return (
@@ -119,11 +128,22 @@ export function Setup({ classId }: { classId: string }) {
         <BulkModal
           cls={cls}
           onClose={() => setBulkOpen(false)}
-          onAdd={(list) => {
-            save({ ...cls, students: [...cls.students, ...list] }, true)
+          onAdd={(list, result) => {
+            // 用户取消「清空轮换结果」确认时不入库，保留弹窗与粘贴内容
+            if (!save({ ...cls, students: [...cls.students, ...list] }, true)) return
             setBulkOpen(false)
+            const skipped = result.skipped.map((r) => r.name || `第 ${r.line} 行`).join('、')
+            setToast(
+              `已导入 ${list.length} 人` +
+                (result.skipped.length ? `；跳过 ${result.skipped.length} 行（${skipped}）` : ''),
+            )
           }}
         />
+      )}
+      {toast && (
+        <div className="toast ok" data-testid="toast-ok">
+          {toast}
+        </div>
       )}
     </div>
   )
@@ -379,12 +399,12 @@ function StudentModal({
   const seatOptions = cls.seats
 
   const submit = () => {
-    const name = draft.name.trim()
+    const name = normalizeName(draft.name)
     if (!name) {
       setNameError('姓名必填')
       return
     }
-    if (!student.id && cls.students.some((s) => s.name === name)) {
+    if (!student.id && cls.students.some((s) => normalizeName(s.name) === name)) {
       setNameError('已存在同名学生')
       return
     }
@@ -537,7 +557,7 @@ function StudentModal({
   )
 }
 
-// ---------- 批量粘贴 ----------
+// ---------- 批量粘贴（逐行预览 → 确认后入名单） ----------
 function BulkModal({
   cls,
   onClose,
@@ -545,39 +565,126 @@ function BulkModal({
 }: {
   cls: ClassEntity
   onClose: () => void
-  onAdd: (list: Student[]) => void
+  onAdd: (list: Student[], result: RosterResult) => void
 }) {
   const [text, setText] = useState('')
-  const parsed = useMemo(
-    () =>
-      text
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .map((line) => {
-          const parts = line.split(/[,，\t]/)
-          const h = parts[1]
-          return { name: parts[0], heightCm: h ? Number(h) : undefined, note: parts[2] }
-        }),
-    [text],
-  )
-  const dupes = parsed.filter((p) => cls.students.some((s) => s.name.trim() === p.name)).map((p) => p.name)
+  const existingNames = useMemo(() => cls.students.map((s) => s.name), [cls.students])
+  const result = useMemo(() => parseRoster(text, existingNames), [text, existingNames])
+  const { rows, importable, skipped } = result
+  const noteOnlyCount = importable.filter((r) => r.noteOnly.length > 0).length
+
+  const confirm = () => {
+    onAdd(
+      importable.map((r) => ({
+        id: uid(),
+        name: r.name,
+        heightCm: r.heightCm,
+        vision: r.vision,
+        special: r.special.length ? r.special : undefined,
+        mustApartFrom: [],
+        note: r.note,
+      })),
+      result,
+    )
+  }
 
   return (
     <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()} data-testid="bulk-modal">
         <h2>批量添加学生</h2>
-        <p className="muted small">每行一个学生，可用逗号附加身高与备注：`张三,152,戴眼镜`</p>
+        <p className="muted small">
+          每行一个学生：<code>姓名,身高,备注</code>（逗号 / 中文逗号 / Tab 分列，教务表选中整列直接粘贴即可）。
+          备注里的「近视需前排、听力、行动不便、需中间」会自动识别为排座约束；「不坐后排」这类无法自动排座的要求会保留在备注并标出。
+        </p>
         <textarea
           className="textarea"
-          rows={10}
+          rows={8}
           value={text}
           data-testid="bulk-text"
-          placeholder={'张三,152\n李四,148,视力需关注\n王五'}
+          placeholder={'张三,152,近视需坐前排\n李四,148,听力不好\n王五,155,走读不坐后排'}
           onChange={(e) => setText(e.target.value)}
         />
-        <p className="muted small">
-          解析到 {parsed.length} 名学生{dupes.length > 0 && <>；与现有名单重名：{dupes.join('、')}（重名将跳过）</>}
-        </p>
+
+        {rows.length > 0 && (
+          <>
+            <div className="table-wrap bulk-preview" data-testid="bulk-preview">
+              <table className="table">
+                <thead>
+                  <tr>
+                    <th>#</th>
+                    <th>姓名</th>
+                    <th>身高</th>
+                    <th>识别出的要求</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const hasBadge = r.vision !== 'none' || r.special.length > 0 || r.noteOnly.length > 0
+                    return (
+                      <tr
+                        key={r.line}
+                        data-testid="bulk-row"
+                        data-status={r.skipReason ? 'skip' : 'import'}
+                        data-name={r.name || undefined}
+                      >
+                        <td className="muted">{r.line}</td>
+                        <td>
+                          {r.name || <span className="muted">—</span>}
+                          {r.name && r.name !== r.rawName && (
+                            <span className="muted small">（原文「{r.rawName}」）</span>
+                          )}
+                        </td>
+                        <td>{r.heightCm ?? '—'}</td>
+                        <td>
+                          <span className="badge-list">
+                            {r.vision === 'front_required' && <em className="badge badge-vision-front">近视·需前排</em>}
+                            {r.vision === 'middle_required' && <em className="badge badge-vision-middle">需中间列</em>}
+                            {r.special.includes('hearing') && <em className="badge badge-hearing">听力</em>}
+                            {r.special.includes('mobility') && <em className="badge badge-mobility">行动不便</em>}
+                            {r.noteOnly.map((t) => (
+                              <em key={t} className="badge badge-note" title="该要求只保留在备注，不参与自动排座">
+                                {t}·仅备注
+                              </em>
+                            ))}
+                            {!hasBadge && !r.note && <span className="muted">—</span>}
+                          </span>
+                          {r.note && <div className="muted small">备注：{r.note}</div>}
+                        </td>
+                        <td>
+                          {r.skipReason ? (
+                            <span className="bad">✗ 跳过：{r.skipReason}</span>
+                          ) : (
+                            <span className="good">
+                              <Check size={13} /> 导入
+                            </span>
+                          )}
+                          {r.warnings.map((w) => (
+                            <div key={w} className="warn-text small">
+                              {w}
+                            </div>
+                          ))}
+                          {!r.skipReason && r.noteOnly.length > 0 && (
+                            <div className="warn-text small">「{r.noteOnly.join('、')}」仅留备注，不参与自动排座</div>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+            <p className="muted small" data-testid="bulk-summary">
+              共 {rows.length} 行：导入 {importable.length} 人
+              {noteOnlyCount > 0 && `（其中 ${noteOnlyCount} 行含仅备注要求）`}
+              {skipped.length > 0 &&
+                `；跳过 ${skipped.length} 行：${skipped
+                  .map((r) => `${r.name || `第 ${r.line} 行`}（${r.skipReason}）`)
+                  .join('、')}`}
+            </p>
+          </>
+        )}
+
         <div className="modal-actions">
           <span className="spacer" />
           <button className="btn" onClick={onClose}>
@@ -586,16 +693,10 @@ function BulkModal({
           <button
             className="btn btn-primary"
             data-testid="bulk-add"
-            disabled={parsed.length === 0}
-            onClick={() =>
-              onAdd(
-                parsed
-                  .filter((p) => p.name && !cls.students.some((s) => s.name === p.name))
-                  .map((p) => ({ id: uid(), name: p.name, heightCm: p.heightCm, vision: 'front_required' as const, mustApartFrom: [], note: p.note }) as Student),
-              )
-            }
+            disabled={importable.length === 0}
+            onClick={confirm}
           >
-            <Eraser size={14} style={{ display: 'none' }} /> 添加 {parsed.length} 人
+            确认导入 {importable.length} 人
           </button>
         </div>
       </div>

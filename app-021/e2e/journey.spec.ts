@@ -143,6 +143,51 @@ test('完整旅程：录学生 → 生成 4 周 → 可复现 → 拖拽交换�
   expect(dl2.suggestedFilename()).toContain('按周座位表.csv')
 })
 
+test('批量粘贴：逐行预览、备注要求识别、重名跳过并说明', async ({ page }) => {
+  await createClass(page, 'E2E 粘贴班')
+  await addStudent(page, { name: '张三', height: '150' })
+
+  await page.getByRole('button', { name: '批量粘贴' }).click()
+  await page.getByTestId('bulk-text').fill(
+    [
+      '姓名,身高,备注', // 表头 → 跳过
+      '张 三,151,教务处重复导出的', // 与现有「张三」重名（中间空格）→ 跳过
+      '李 四,152,视力要坐前排', // → 近视·需前排
+      '王五,153,听力不好', // → 听力
+      '赵六,154,走读不坐后排', // → 仅备注
+      '钱七,155',
+      '钱七,156', // 粘贴内部重名 → 跳过
+    ].join('\n'),
+  )
+
+  // 每一行都能看到读成了什么
+  const preview = page.getByTestId('bulk-preview')
+  await expect(preview.getByTestId('bulk-row')).toHaveCount(7)
+  await expect(preview.locator('[data-status="skip"]')).toHaveCount(3)
+  await expect(preview).toContainText('表头行')
+  await expect(preview).toContainText('与现有名单重名')
+  await expect(preview).toContainText('与第 6 行重名')
+  await expect(preview).toContainText('近视·需前排')
+  await expect(preview).toContainText('听力')
+  await expect(preview).toContainText('不坐后排·仅备注')
+  // 摘要与确认按钮如实计数
+  await expect(page.getByTestId('bulk-summary')).toContainText('共 7 行')
+  await expect(page.getByTestId('bulk-summary')).toContainText('导入 4 人')
+  await expect(page.getByTestId('bulk-summary')).toContainText('跳过 3 行')
+  await expect(page.getByTestId('bulk-add')).toHaveText('确认导入 4 人')
+
+  await page.getByTestId('bulk-add').click()
+
+  // 导入后明确说明跳过了谁
+  await expect(page.getByTestId('toast-ok')).toContainText('已导入 4 人')
+  await expect(page.getByTestId('toast-ok')).toContainText('张三')
+  await expect(page.getByText('学生名单（5 人）')).toBeVisible()
+  // 结构化字段与备注原文都落库；空格姓名被规范化
+  await expect(page.locator('[data-testid="student-row"][data-name="李四"]')).toContainText('近视·需前排')
+  await expect(page.locator('[data-testid="student-row"][data-name="王五"]')).toContainText('听力')
+  await expect(page.locator('[data-testid="student-row"][data-name="赵六"]')).toContainText('走读不坐后排')
+})
+
 test('删除班级需确认（接受确认框后从列表消失）', async ({ page }) => {
   await createClass(page, 'E2E 待删班')
   await page.goto('/')
