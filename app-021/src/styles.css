@@ -245,6 +245,11 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--brand-weak)
 }
 .modal h2 { margin-bottom: 4px; }
 .modal-actions { display: flex; gap: 8px; margin-top: 10px; }
+.modal-wide { width: 860px; }
+.bulk-preview { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.bulk-preview td { white-space: normal; }
+.row-skip td { opacity: 0.55; }
+.ok-text { color: #15803d; }
 
 /* ---------- 打印 ---------- */
 .print-toolbar {

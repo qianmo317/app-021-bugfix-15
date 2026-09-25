@@ -3,13 +3,13 @@ import { Link } from '../router'
 import { useStore } from '../store'
 import type { ClassEntity, LayoutConfig, Student } from '../types'
 import { buildSeats, specialLabel, visionLabel } from '../lib/layout'
+import { normalizeName, parseRosterText } from '../lib/roster'
 import { validateClass } from '../lib/validate'
 import { uid } from '../lib/id'
 import { SeatGrid } from '../components/SeatGrid'
 import {
   AlertTriangle,
   ArrowLeft,
-  Eraser,
   Rows3,
   Settings2,
   Table2,
@@ -379,12 +379,12 @@ function StudentModal({
   const seatOptions = cls.seats
 
   const submit = () => {
-    const name = draft.name.trim()
+    const name = normalizeName(draft.name)
     if (!name) {
       setNameError('姓名必填')
       return
     }
-    if (!student.id && cls.students.some((s) => s.name === name)) {
+    if (!student.id && cls.students.some((s) => normalizeName(s.name) === name)) {
       setNameError('已存在同名学生')
       return
     }
@@ -548,36 +548,74 @@ function BulkModal({
   onAdd: (list: Student[]) => void
 }) {
   const [text, setText] = useState('')
-  const parsed = useMemo(
-    () =>
-      text
-        .split('\n')
-        .filter((line) => line.length > 0)
-        .map((line) => {
-          const parts = line.split(/[,，\t]/)
-          const h = parts[1]
-          return { name: parts[0], heightCm: h ? Number(h) : undefined, note: parts[2] }
-        }),
-    [text],
-  )
-  const dupes = parsed.filter((p) => cls.students.some((s) => s.name.trim() === p.name)).map((p) => p.name)
+  const lines = useMemo(() => parseRosterText(text, cls.students), [text, cls.students])
+  const addable = lines.filter((l) => l.status !== 'skip')
+  const skipped = lines.filter((l) => l.status === 'skip')
+  const noteOnlyCount = lines.filter((l) => l.noteOnly.length > 0).length
 
   return (
     <div className="modal-mask" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <h2>批量添加学生</h2>
-        <p className="muted small">每行一个学生，可用逗号附加身高与备注：`张三,152,戴眼镜`</p>
+        <p className="muted small">
+          每行一个学生：`姓名,身高,备注`（逗号 / 中文逗号 / 制表符分隔，可从教务表直接粘贴）。
+          备注里的「近视、听力不好、行动不便、需中间」等会自动识别为座位要求；识别不了的会标出来，确认后再入名单。
+        </p>
         <textarea
           className="textarea"
-          rows={10}
+          rows={6}
           value={text}
           data-testid="bulk-text"
-          placeholder={'张三,152\n李四,148,视力需关注\n王五'}
+          placeholder={'张三,152,近视\n李四,148,听力不好\n王五,,走读不坐后排'}
           onChange={(e) => setText(e.target.value)}
         />
-        <p className="muted small">
-          解析到 {parsed.length} 名学生{dupes.length > 0 && <>；与现有名单重名：{dupes.join('、')}（重名将跳过）</>}
-        </p>
+        {lines.length > 0 && (
+          <>
+            <p className="small" data-testid="bulk-summary">
+              共 {lines.length} 行：<strong>{addable.length} 人可加入名单</strong>
+              {noteOnlyCount > 0 && <span className="warn-text">（其中 {noteOnlyCount} 行的要求只保留在备注）</span>}
+              {skipped.length > 0 && (
+                <span className="error-text">
+                  ；{skipped.length} 行跳过：{skipped.map((l) => `${l.name || '无名'}（第${l.lineNo}行）`).join('、')}
+                </span>
+              )}
+            </p>
+            <div className="table-wrap bulk-preview">
+              <table className="table" data-testid="bulk-preview">
+                <thead>
+                  <tr>
+                    <th>行</th>
+                    <th>姓名</th>
+                    <th>身高</th>
+                    <th>识别出的要求</th>
+                    <th>保留的备注</th>
+                    <th>结果</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {lines.map((l) => (
+                    <tr key={l.lineNo} className={l.status === 'skip' ? 'row-skip' : ''} data-testid="bulk-row">
+                      <td className="muted">{l.lineNo}</td>
+                      <td>{l.name || '—'}</td>
+                      <td>{l.heightCm ?? '—'}</td>
+                      <td>{l.recognized.join('、') || '—'}</td>
+                      <td className="muted">{l.note ?? '—'}</td>
+                      <td>
+                        {l.status === 'skip' ? (
+                          <span className="error-text">✕ {l.messages.join('；')}</span>
+                        ) : l.status === 'warn' ? (
+                          <span className="warn-text">⚠ 加入名单；{l.messages.join('；')}</span>
+                        ) : (
+                          <span className="ok-text">✓ 加入名单{l.messages.length > 0 && `（${l.messages.join('；')}）`}</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
         <div className="modal-actions">
           <span className="spacer" />
           <button className="btn" onClick={onClose}>
@@ -586,16 +624,22 @@ function BulkModal({
           <button
             className="btn btn-primary"
             data-testid="bulk-add"
-            disabled={parsed.length === 0}
+            disabled={addable.length === 0}
             onClick={() =>
               onAdd(
-                parsed
-                  .filter((p) => p.name && !cls.students.some((s) => s.name === p.name))
-                  .map((p) => ({ id: uid(), name: p.name, heightCm: p.heightCm, vision: 'front_required' as const, mustApartFrom: [], note: p.note }) as Student),
+                addable.map((l) => ({
+                  id: uid(),
+                  name: l.name,
+                  heightCm: l.heightCm,
+                  vision: l.vision,
+                  special: l.special.length > 0 ? l.special : undefined,
+                  mustApartFrom: [],
+                  note: l.note,
+                })),
               )
             }
           >
-            <Eraser size={14} style={{ display: 'none' }} /> 添加 {parsed.length} 人
+            确认添加 {addable.length} 人
           </button>
         </div>
       </div>
